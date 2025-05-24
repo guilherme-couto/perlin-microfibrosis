@@ -56,7 +56,7 @@ mesh3D.points = points';
 %%% GENERATOR SETUP
 
 % Load in the permutation tables
-load('fibro_seedinfo3d.mat','permute_tables','offset_tables');
+load('fibro_seedinfo3D.mat','permute_tables','offset_tables');
 
 % Load in the generator calibrations learned from 2D histology
 load('param_modes.mat','param_modes','densities');
