@@ -6,101 +6,135 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from mpl_toolkits.mplot3d import Axes3D
 
 # ========== Settings ==========
-input_dir = "./"  # folder where the CSV files are located
+input_file = "./fibrosis_metrics.csv"
 output_dir = "./pca_outputs"
 os.makedirs(output_dir, exist_ok=True)
-os.makedirs(f"{output_dir}/plots", exist_ok=True)
-os.makedirs(f"{output_dir}/data", exist_ok=True)
+for mode in ["threshold", "composition", "general"]:
+    os.makedirs(f"{output_dir}/plots/{mode}", exist_ok=True)
+    os.makedirs(f"{output_dir}/data/{mode}", exist_ok=True)
 
-# ========== Load and combine datasets ==========
-filenames = {
-    "compact": "metrics_compact.csv",
-    "diffuse": "metrics_diffuse.csv",
-    "interstitial": "metrics_interstitial.csv",
-    "patchy": "metrics_patchy.csv"
+# ========== Load data ==========
+df_all = pd.read_csv(input_file)
+
+# ========== Define reference densities ==========
+reference_densities = {
+    "interstitial": 0.096,
+    "compact": 0.472,
+    "diffuse": 0.22,
+    "patchy": 0.269
 }
 
-data_frames = []
-
-for fibro_type, filename in filenames.items():
-    path = os.path.join(input_dir, filename)
-    df = pd.read_csv(path)
-    df["fibro_type"] = fibro_type
-    data_frames.append(df)
-
-df_all = pd.concat(data_frames, ignore_index=True)
-df_all.to_csv(f"{output_dir}/data/merged_metrics.csv", index=False)
-
 # ========== Prepare data ==========
-feature_cols = df_all.columns[2:-1]  # exclude 'fibro_typename', 'seed', 'fibro_type'
-if "fibro_typename" in feature_cols:
-    feature_cols = feature_cols.drop("fibro_typename")
-elif "seed" in feature_cols:
-    feature_cols = feature_cols.drop("seed")
-elif "fibro_type" in feature_cols:
-    feature_cols = feature_cols.drop("fibro_type")
+feature_cols = [col for col in df_all.columns if any(col.startswith(prefix) for prefix in 
+                                                     ["orientation_", "major_axis_", "minor_axis_"])]
+print(f"Feature columns used for PCA total({len(feature_cols)}):", feature_cols)
 
-# Ensure feature_cols is a list
-feature_cols = list(feature_cols)
-print("Feature columns used for PCA:", feature_cols)
+df_all["fibro_type"] = df_all["fibro_typename"]
+df_all["mode"] = df_all["generation_mode"]
+df_all["density"] = df_all["density"].astype(float)
+theta = df_all["theta"]
+y_type = df_all["fibro_type"]
+y_mode = df_all["mode"]
 
-X = df_all[feature_cols].values
-y = df_all["fibro_type"].values
+# ========== Select reference data for PCA ==========
+df_ref = pd.concat([
+    df_all[
+        (df_all["mode"] == "threshold") &
+        (df_all["fibro_type"] == ftype) &
+        (np.isclose(df_all["density"], ref_density))
+    ]
+    for ftype, ref_density in reference_densities.items()
+], ignore_index=True)
 
-# ========== Standardize features ==========
+X_ref = df_ref[feature_cols].values
+y_ref_type = df_ref["fibro_type"].values
+theta_ref = df_ref["theta"].values
+
+# ========== Standardize reference features ==========
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+X_ref_scaled = scaler.fit_transform(X_ref)
 
-# ========== PCA: 2D ==========
+# ========== PCA from reference data ==========
 pca_2d = PCA(n_components=2)
-X_pca_2d = pca_2d.fit_transform(X_scaled)
+X_ref_pca_2d = pca_2d.fit_transform(X_ref_scaled)
 
-df_pca_2d = pd.DataFrame(X_pca_2d, columns=["PC1", "PC2"])
-df_pca_2d["fibro_type"] = y
-df_pca_2d.to_csv(f"{output_dir}/data/pca_2d.csv", index=False)
+# Save explained variance
+explained_variance = pca_2d.explained_variance_ratio_
+np.savetxt(f"{output_dir}/data/threshold/explained_variance_ratio.txt", explained_variance, fmt="%.6f")
+print(f"Explained variance ratio (PC1, PC2): {explained_variance}")
 
-# Plot PCA 2D
+# Save reference projection
+df_ref_pca_2d = pd.DataFrame(X_ref_pca_2d, columns=["PC1", "PC2"])
+df_ref_pca_2d["fibro_type"] = y_ref_type
+df_ref_pca_2d["theta"] = theta_ref
+df_ref_pca_2d.to_csv(f"{output_dir}/data/threshold/pca_2d_ref.csv", index=False)
+
+# Project all data using reference PCA
+X_all_scaled = scaler.transform(df_all[feature_cols].values)
+X_all_pca_2d = pca_2d.transform(X_all_scaled)
+
+df_all_pca_2d = pd.DataFrame(X_all_pca_2d, columns=["PC1", "PC2"])
+df_all_pca_2d["fibro_type"] = y_type
+df_all_pca_2d["theta"] = theta
+df_all_pca_2d["mode"] = y_mode
+df_all_pca_2d.to_csv(f"{output_dir}/data/general/pca_2d_all.csv", index=False)
+
+# ========== Plots ==========
+def plot_by_theta(df_subset, title, save_path):
+    plt.figure(figsize=(10, 7))
+    scatter = plt.scatter(df_subset["PC1"], df_subset["PC2"], c=df_subset["theta"], cmap="viridis", s=70)
+    plt.colorbar(scatter, label="Theta (radians)")
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+    plt.title(title)
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+# Plot PCA colored by theta
+plot_by_theta(df_all_pca_2d[df_all_pca_2d["mode"] == "threshold"],
+              "PCA (2D) of Threshold Patterns Colored by Theta",
+              f"{output_dir}/plots/threshold/pca_2d_theta.png")
+
+plot_by_theta(df_all_pca_2d[df_all_pca_2d["mode"] == "composition"],
+              "PCA (2D) of Composition Patterns Colored by Theta",
+              f"{output_dir}/plots/composition/pca_2d_theta.png")
+
+plot_by_theta(df_all_pca_2d,
+              "PCA (2D) of All Patterns Colored by Theta",
+              f"{output_dir}/plots/general/pca_2d_theta_all.png")
+
+# Existing plot by type and generation mode
 plt.figure(figsize=(10, 7))
-sns.scatterplot(data=df_pca_2d, x="PC1", y="PC2", hue="fibro_type", palette="Set2", s=70)
-plt.title("PCA (2D) of Fibrosis Metrics")
-plt.savefig(f"{output_dir}/plots/pca_2d.png", dpi=300)
+sns.scatterplot(data=df_all_pca_2d[df_all_pca_2d["mode"] == "threshold"],
+                x="PC1", y="PC2", hue="fibro_type", palette="Set2", s=70)
+plt.title("PCA (2D) of Threshold Fibrosis Patterns by Type")
+plt.savefig(f"{output_dir}/plots/threshold/pca_2d_by_type.png", dpi=300)
 plt.close()
 
-# ========== PCA: 3D ==========
-pca_3d = PCA(n_components=3)
-X_pca_3d = pca_3d.fit_transform(X_scaled)
-
-df_pca_3d = pd.DataFrame(X_pca_3d, columns=["PC1", "PC2", "PC3"])
-df_pca_3d["fibro_type"] = y
-df_pca_3d.to_csv(f"{output_dir}/data/pca_3d.csv", index=False)
-
-# Plot PCA 3D
-fig = plt.figure(figsize=(10, 7))
-ax = fig.add_subplot(111, projection="3d")
-for label in np.unique(y):
-    subset = df_pca_3d[df_pca_3d["fibro_type"] == label]
-    ax.scatter(subset["PC1"], subset["PC2"], subset["PC3"], label=label, s=60)
-ax.set_title("PCA (3D) of Fibrosis Metrics")
-ax.set_xlabel("PC1")
-ax.set_ylabel("PC2")
-ax.set_zlabel("PC3")
-ax.legend()
-plt.savefig(f"{output_dir}/plots/pca_3d.png", dpi=300)
+plt.figure(figsize=(10, 7))
+sns.scatterplot(data=df_all_pca_2d[df_all_pca_2d["mode"] == "composition"],
+                x="PC1", y="PC2", hue="fibro_type", palette="Set2", s=70)
+plt.title("PCA (2D) of Composition Fibrosis Patterns by Type")
+plt.savefig(f"{output_dir}/plots/composition/pca_2d_by_type.png", dpi=300)
 plt.close()
 
-# ========== KMeans Clustering on PCA 2D ==========
+plt.figure(figsize=(10, 7))
+sns.scatterplot(data=df_all_pca_2d, x="PC1", y="PC2", hue="fibro_type", style="mode", palette="Set2", s=70)
+plt.title("PCA (2D) of All Fibrosis Patterns by Type and Generation Mode")
+plt.savefig(f"{output_dir}/plots/general/pca_2d_all.png", dpi=300)
+plt.close()
+
+# ========== KMeans Clustering (optional) ==========
 kmeans = KMeans(n_clusters=4, random_state=42)
-df_pca_2d["cluster"] = kmeans.fit_predict(X_pca_2d)
-df_pca_2d.to_csv(f"{output_dir}/data/pca_2d_with_clusters.csv", index=False)
+df_all_pca_2d["cluster"] = kmeans.fit_predict(X_all_pca_2d)
+df_all_pca_2d.to_csv(f"{output_dir}/data/general/pca_2d_with_clusters.csv", index=False)
 
-# Plot clusters
 plt.figure(figsize=(10, 7))
-sns.scatterplot(data=df_pca_2d, x="PC1", y="PC2", hue="cluster", style="fibro_type", palette="Set1", s=70)
-plt.title("PCA (2D) with KMeans Clustering")
-plt.savefig(f"{output_dir}/plots/pca_2d_clusters.png", dpi=300)
+sns.scatterplot(data=df_all_pca_2d, x="PC1", y="PC2", hue="cluster", style="mode", palette="Set1", s=70)
+plt.title("PCA (2D) with KMeans Clustering by Generation Mode")
+plt.savefig(f"{output_dir}/plots/general/pca_2d_clusters.png", dpi=300)
 plt.close()
 
-print("Analysis complete. Outputs saved to:", output_dir)
+print("PCA complete. Outputs saved in:", output_dir)

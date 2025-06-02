@@ -1,105 +1,112 @@
-% Script to generate fibrosis patterns and compute ellipse-based metrics
-% for four types of fibrosis: compact, diffuse, interstitial, and patchy.
-% Each type generates 100 patterns using specified parameters and density.
-% Metrics are saved into CSV files in the specified format.
+% Script to generate and analyze fibrosis patterns using ellipse-based metrics.
+% Supports two generation modes: 'threshold' and 'composition'.
+% Iterates over multiple theta values and densities for each fibrosis type.
+% Saves all metrics in a single CSV file and saves 9 sample images per mode/type combo.
 
 clear; clc;
 
-% Add any required paths here (e.g., for functions)
-% addpath('path/to/generator');
-
-% Define a 'fibrosis' colormap
-% fibroclr = [[0.95, 0.85, 0.55]; [0.8, 0.2, 0.2]]; % Brown and red
+% Define colormap
 fibroclr = [[0.1, 0.5, 0.8]; [0.9, 0.5, 0.1]];
 
 % Power thresholds for ellipseMetrics
-power_thresholds = [0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9];
+power_thresholds = 0.1:0.1:0.9;
+threshold_labels = 10:10:90;
 
-% Fibrosis types and parameters
+% Output CSV initialization
+csv_filename = 'fibrosis_metrics.csv';
+fid = fopen(csv_filename, 'w');
+fprintf(fid, 'generation_mode,fibro_typename,density,theta,seed');
+for i = 1:length(threshold_labels)
+    fprintf(fid, ',orientation_%d,major_axis_%d,minor_axis_%d', ...
+        threshold_labels(i), threshold_labels(i), threshold_labels(i));
+end
+fprintf(fid, '\n');
+
+% Fiber orientation angles
+thetas_radians = [-pi/2, -pi/3, -pi/6, 0, pi/6, pi/3, pi/2];
+
+% Fibrosis types and default parameters
 fibrosis_types = {'interstitial', 'compact', 'diffuse', 'patchy'};
 fibrosis_params = {
-    [0.3, 0.31, 0.32, 0.24, 0.96, 4.67, 1.89, 0.59341], 0.096;
-    [NaN, NaN, 0.44, 0.96, 0.59, 2.03, 2.47, -0.15708], 0.472;
-    [NaN, NaN, 0.49, 0.07, 0.44, 1.22, 2.17, 0.19199], 0.22;
-    [0.38, 0.31, 0.42, 0.32, 0.78, 2.1, 2.5, 1.18680], 0.269
+    [0.3, 0.31, 0.32, 0.24, 0.96, 4.67, 1.89, 0.59341], [0.096], [0.59341, thetas_radians];
+    [NaN, NaN, 0.44, 0.96, 0.59, 2.03, 2.47, -0.15708], [0.472], [0.15708, thetas_radians];
+    [NaN, NaN, 0.49, 0.07, 0.44, 1.22, 2.17, 0.19199], [0.22], [0.19199, thetas_radians];
+    [0.38, 0.31, 0.42, 0.32, 0.78, 2.1, 2.5, 1.18680], [0.269], [1.18680, thetas_radians]
 };
 
-% Common tolerance for density matching
+% Parameters
+samples_per_config = 100;
+generation_modes = {'threshold', 'composition'};
 tolerance = 0.005;
 
-% Loop over each fibrosis type
-for t = 1:numel(fibrosis_types)
-    type_name = fibrosis_types{t};
-    params = fibrosis_params{t,1};
-    density = fibrosis_params{t,2};
+% Loop over each generation mode
+for g = 1:length(generation_modes)
+    mode = generation_modes{g};
 
-    % Generate header names in the order: orientation_X, major_axis_X, minor_axis_X
-    thresholds = 10:10:90;
-    header_names = {'fibro_typename', 'seed'};
-    for i = 1:length(thresholds)
-        th_str = num2str(thresholds(i));
-        header_names = [header_names, ...
-            strcat('orientation_', th_str), ...    
-            strcat('major_axis_', th_str), ...
-            strcat('minor_axis_', th_str)];
-    end
+    % Loop over each fibrosis type
+    for t = 1:numel(fibrosis_types)
+        type_name = fibrosis_types{t};
+        base_params = fibrosis_params{t,1};
+        density_list = fibrosis_params{t,2};
+        theta_list = unique(fibrosis_params{t,3});
 
-    % Initialize results cell array (1 header row + 100 data rows, each with 29 columns - fibro_typename, seed, 27 metrics))
-    results = cell(101, length(header_names));
-    results(1, :) = header_names;
+        % Collect 9 patterns for plotting
+        example_patterns = {};
 
-    % Collect 9 patterns for plotting
-    example_patterns = {};
+        % Loop over theta and density variations
+        for th = 1:length(theta_list)
+            theta = theta_list(th);
+            for d = 1:length(density_list)
+                density = density_list(d);
+                params = base_params;
+                params(8) = theta; % orientation angle
 
-    for i = 1:100
-        fprintf('Generating %s pattern %d/100\n', type_name, i);
-        seed = i; % could be randomized
-        pattern = generateOnePatternComposition(params, density, seed, tolerance);
+                fprintf('Generating [%s] patterns for %s at theta=%.6f, density=%.3f\n', ...
+                    mode, type_name, theta, density);
 
-        % Save first 9 for visualization
-        if i <= 9
-            example_patterns{end+1} = pattern;
+                for i = 1:samples_per_config
+                    seed = i;
+
+                    % Generate pattern
+                    if strcmp(mode, 'threshold')
+                        pattern = generateOnePatternThreshold(params, density, seed);
+                    elseif strcmp(mode, 'composition')
+                        pattern = generateOnePatternComposition(params, density, seed, tolerance);
+                    else
+                        error('Unsupported generation mode.');
+                    end
+
+                    % Save up to 9 patterns for image
+                    if i <= 9 && th == 1 && d == 1
+                        example_patterns{end+1} = pattern;
+                    end
+
+                    % Compute metrics
+                    metrics = ellipseMetrics(pattern, power_thresholds);
+
+                    % Write row to CSV
+                    fprintf(fid, '%s,%s,%.5f,%.5f,%d', ...
+                        mode, type_name, density, theta, seed);
+                    fprintf(fid, ',%.6f', metrics);
+                    fprintf(fid, '\n');
+                end
+
+                % Save 9 sample images
+                figure('visible','off');
+                colormap(fibroclr);
+                for k = 1:9
+                    subplot(3,3,k);
+                    imagesc(example_patterns{k});
+                    axis equal off;
+                    title(sprintf('%s #%d', type_name, k));
+                end
+                img_name = sprintf('examples_%s_%s.png', type_name, mode);
+                print(img_name, '-dpng');
+                close;
+            end
         end
-
-        % Compute metrics
-        metrics = ellipseMetrics(pattern, power_thresholds);
-
-        % Store results
-        results{i+1,1} = type_name;
-        results{i+1,2} = seed;
-        results(i+1,3:end) = num2cell(metrics);
     end
-
-    % Save CSV
-    filename = sprintf('metrics_%s.csv', type_name);
-    fid = fopen(filename, 'w');
-
-    % Write header
-    for j = 1:numel(results(1,:))-1
-        fprintf(fid, '%s,', results{1,j});
-    end
-    fprintf(fid, '%s\n', results{1,end});
-
-    % Write data rows
-    for i = 2:size(results,1)
-        fprintf(fid, '%s,%d', results{i,1}, results{i,2});
-        for j = 3:size(results,2)
-            fprintf(fid, ',%.6f', results{i,j});
-        end
-        fprintf(fid, '\n');
-    end
-    fclose(fid);
-
-    % Plot 9 example patterns (3x3 grid)
-    figure('visible','off');
-    colormap(fibroclr);
-    for k = 1:9
-        subplot(3,3,k);
-        imagesc(example_patterns{k});
-        axis equal off;
-        title(sprintf('%s #%d', type_name, k));
-    end
-    img_name = sprintf('examples_%s.png', type_name);
-    print(img_name, '-dpng');
-    close;
 end
+
+fclose(fid);
+disp('Simulation complete. All metrics saved.');
